@@ -92,19 +92,14 @@ class EuCentralBank < Money::Bank::VariableExchange
     check_currency_available(from)
     check_currency_available(to)
 
-    if date.is_a?(Hash)
-      # Backwards compatibility for the opts hash
-      date = date[:date]
-    end
-
+    # Backwards compatibility for the opts hash
+    date = date[:date] if date.is_a?(Hash)
     store.get_rate(::Money::Currency.wrap(from).iso_code, ::Money::Currency.wrap(to).iso_code, date)
   end
 
   def set_rate(from, to, rate, date = nil)
-    if date.is_a?(Hash)
-      # Backwards compatibility for the opts hash
-      date = date[:date]
-    end
+    # Backwards compatibility for the opts hash
+    date = date[:date] if date.is_a?(Hash)
     store.add_rate(::Money::Currency.wrap(from).iso_code, ::Money::Currency.wrap(to).iso_code, rate, date)
   end
 
@@ -117,8 +112,7 @@ class EuCentralBank < Money::Bank::VariableExchange
   end
 
   def export_rates(format, file = nil, opts = {})
-    raise Money::Bank::UnknownRateFormat unless
-      RATE_FORMATS.include? format
+    raise Money::Bank::UnknownRateFormat unless RATE_FORMATS.include? format
 
     store.transaction true do
       s = case format
