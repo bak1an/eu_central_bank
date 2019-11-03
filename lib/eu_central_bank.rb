@@ -1,8 +1,9 @@
 require 'open-uri'
 require 'nokogiri'
-require 'ecb/rates_document'
+require_relative 'ecb/rates_document'
+require_relative 'ecb/rate_setter'
 require 'money'
-require 'money/rates_store/store_with_historical_data_support'
+require_relative 'money/rates_store/store_with_historical_data_support'
 
 class InvalidCache < StandardError ; end
 
@@ -22,20 +23,21 @@ class EuCentralBank < Money::Bank::VariableExchange
   ECB_90_DAY_URL = 'https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist-90d.xml'.freeze
   ECB_ALL_HIST_URL = 'https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.xml'.freeze
 
-  LEGACY_CURRENCIES = %w(CYP SIT ROL TRL)
-
   def initialize(st = Money::RatesStore::StoreWithHistoricalDataSupport.new, &block)
     super
     @currency_string = nil
   end
 
   def update_rates(cache=nil)
-    update_parsed_rates(doc(cache))
+    @rates_updated_at, @last_updated = ECB::CurrentRateSetter.new(doc(cache)).update_rates(store)
   end
 
   def update_historical_rates(cache=nil, all=false)
     url = all ? ECB_ALL_HIST_URL : ECB_90_DAY_URL
-    update_parsed_historical_rates(doc(cache, url))
+    updated_at, time = ECB::HistoricalRateSetter.new(doc(cache, url)).update_rates(store)
+    @historical_rates_updated_at = updated_at
+    @historical_last_updated = time
+    [updated_at, time]
   end
 
   def save_rates(cache, url=ECB_RATES_URL)
@@ -52,7 +54,7 @@ class EuCentralBank < Money::Bank::VariableExchange
   end
 
   def update_rates_from_s(content)
-    update_parsed_rates(parse_rates(content))
+    ECB::CurrentRateSetter.new(parse_rates(content)).update_rates(store)
   end
 
   def save_rates_to_s(url=ECB_RATES_URL)
@@ -98,9 +100,7 @@ class EuCentralBank < Money::Bank::VariableExchange
   end
 
   def set_rate(from, to, rate, date = nil)
-    # Backwards compatibility for the opts hash
-    date = date[:date] if date.is_a?(Hash)
-    store.add_rate(::Money::Currency.wrap(from).iso_code, ::Money::Currency.wrap(to).iso_code, rate, date)
+    ECB::RateSetter.new.set_rate(store, from, to, rate, date)
   end
 
   def rates
@@ -133,8 +133,7 @@ class EuCentralBank < Money::Bank::VariableExchange
   end
 
   def import_rates(format, s, opts = {})
-    raise Money::Bank::UnknownRateFormat unless
-      RATE_FORMATS.include? format
+    raise Money::Bank::UnknownRateFormat unless RATE_FORMATS.include? format
 
     store.transaction true do
       data = case format
@@ -146,15 +145,19 @@ class EuCentralBank < Money::Bank::VariableExchange
          YAML.load(s)
        end
 
-      data.each do |key, rate|
-        from, to = key.split(SERIALIZER_SEPARATOR)
-        to, date = to.split(SERIALIZER_DATE_SEPARATOR)
-
-        store.add_rate from, to, BigDecimal(rate), date
-      end
+      add_rates(store, data)
     end
 
     self
+  end
+
+  def add_rates(store, data)
+    data.each do |key, rate|
+      from, to = key.split(SERIALIZER_SEPARATOR)
+      to, date = to.split(SERIALIZER_DATE_SEPARATOR)
+
+      store.add_rate from, to, BigDecimal(rate), date
+    end
   end
 
   def check_currency_available(currency)
@@ -177,8 +180,7 @@ class EuCentralBank < Money::Bank::VariableExchange
 
   def parse_rates(io)
     doc = ECB::RatesDocument.new
-    parser = Nokogiri::XML::SAX::Parser.new(doc)
-    parser.parse(io)
+    Nokogiri::XML::SAX::Parser.new(doc).parse(io)
 
     unless doc.errors.empty?
       # Temporary workaround for jruby until
@@ -190,32 +192,6 @@ class EuCentralBank < Money::Bank::VariableExchange
     end
 
     doc
-  end
-
-  def copy_rates(rates_document, with_date = false)
-    rates_document.rates.each do |date, rates|
-      rates.each do |currency, rate|
-        next if LEGACY_CURRENCIES.include?(currency)
-        set_rate('EUR', currency, BigDecimal(rate), with_date ? date : nil)
-      end
-      set_rate('EUR', 'EUR', 1, with_date ? date : nil)
-    end
-  end
-
-  def update_parsed_rates(rates_document)
-    store.transaction true do
-      copy_rates(rates_document)
-    end
-    @rates_updated_at = rates_document.updated_at
-    @last_updated = Time.now
-  end
-
-  def update_parsed_historical_rates(rates_document)
-    store.transaction true do
-      copy_rates(rates_document, true)
-    end
-    @historical_rates_updated_at = rates_document.updated_at
-    @historical_last_updated = Time.now
   end
 
   private
